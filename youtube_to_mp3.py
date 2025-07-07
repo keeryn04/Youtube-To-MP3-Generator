@@ -4,6 +4,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 from tkinter.ttk import Progressbar
 import threading
+import re
+import glob
 
 def download_audio():
     url = url_entry.get().strip()
@@ -30,18 +32,21 @@ def download_audio():
 
     def process():
         try:
-            audio_path = os.path.join(save_path, f"{file_name}.mp4")
-            mp3_path = os.path.join(save_path, f"{file_name}.mp3")
+            output_template = os.path.join(save_path, f"{file_name}.%(ext)s")
 
+            yt_dlp_output = []
             def update_progress(stream, process_type):
                 for line in iter(stream.readline, b''):
                     line = line.decode("utf-8")
+                    yt_dlp_output.append(line)
                     if process_type == "yt-dlp":
                         if "download" in line and "%" in line:
                             try:
-                                percent = int(line.split('%')[0].split()[-1])
-                                progress_bar["value"] = percent
-                                root.update_idletasks()
+                                match = re.search(r"\[download\]\s+([\d.]+)%", line)
+                                if match:
+                                    percent = float(match.group(1))
+                                    progress_bar["value"] = percent
+                                    root.update_idletasks()
                             except ValueError:
                                 pass
                     elif process_type == "ffmpeg":
@@ -59,25 +64,18 @@ def download_audio():
 
             # Start yt-dlp process
             yt_dlp_process = subprocess.Popen(
-                ["yt-dlp", "-f", "bestaudio", "-o", audio_path, url],
+                ["yt-dlp", "-x", "--audio-format", "mp3", "-f", "bestaudio[ext!=m3u8]", "-o", output_template, url],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT
             )
             yt_dlp_thread = threading.Thread(target=update_progress, args=(yt_dlp_process.stdout, "yt-dlp"))
             yt_dlp_thread.start()
-            yt_dlp_thread.join()
             yt_dlp_process.wait()
 
-            # Start ffmpeg process
-            ffmpeg_process = subprocess.Popen(
-                ["ffmpeg", "-y", "-i", audio_path, "-q:a", "0", "-map", "a", mp3_path],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT
-            )
-            ffmpeg_thread = threading.Thread(target=update_progress, args=(ffmpeg_process.stdout, "ffmpeg"))
-            ffmpeg_thread.start()
-            ffmpeg_thread.join()
-            ffmpeg_process.wait()
-
-            os.remove(audio_path)
+            if yt_dlp_process.returncode != 0:
+                print("yt-dlp failed:")
+                print("\n".join(yt_dlp_output))
+                root.after(0, update_status_label, "yt-dlp failed!")
+                return
 
             root.after(0, update_status_label, "Download Complete!")
             root.after(0, progress_bar.pack_forget)
